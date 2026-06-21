@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Escape From the Goose</title>
+<style>
+    /* ===== 页面与画布样式 ===== */
+    body {
+        margin: 0;
+        background: #87ceeb;
+        overflow: hidden;
+        font-family: "Microsoft YaHei", sans-serif;
+    }
+
+    canvas {
+        display: block;
+        margin: auto;
+        background: linear-gradient(#cfe9f5, #ffffff);
+    }
+
+    /* ===== UI 提示文字 ===== */
+    #ui {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: #333;
+        font-size: 18px;
+        text-align: center;
+        pointer-events: none;
+    }
+    
+    /* ===== 失败画面 ===== */
+    #gameOverScreen {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(0,0,0,0.65);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10;
+    }
+
+    #gameOverBox {
+        background: #fff;
+        padding: 30px 40px;
+        border-radius: 12px;
+        text-align: center;
+        box-shadow: 0 0 20px rgba(0,0,0,0.4);
+    }
+
+    #gameOverBox h1 {
+        margin: 0 0 15px;
+        font-size: 32px;
+        color: #e74c3c;
+    }
+
+    #gameOverBox p {
+        font-size: 20px;
+        margin: 8px 0;
+    }
+
+    #retryBtn {
+        margin-top: 20px;
+        padding: 10px 25px;
+        font-size: 18px;
+        border: none;
+        border-radius: 8px;
+        background: #3498db;
+        color: #fff;
+        cursor: pointer;
+    }
+
+    #retryBtn:hover {
+        background: #2980b9;
+    }
+
+    #startScreen {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: linear-gradient(#87ceeb, #ffffff);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 20;
+        font-family: "Microsoft YaHei", sans-serif;
+    }
+
+    #startScreen h1 {
+        font-size: 48px;
+        margin-bottom: 20px;
+        color: #333;
+    }
+
+    #startScreen p {
+        font-size: 22px;
+        color: #555;
+    }
+
+    #startScreen .sub {
+        margin-top: 10px;
+        font-size: 18px;
+        color: #888;
+    }
+</style>
+</head>
+
+<body>
+
+<div id="ui">
+    按 <b>空格键</b> 开始游戏<br>
+    ← → 移动 | ↑ 跳跃 | ↓ 快速下落
+</div>
+
+<!-- 起始页面 -->
+<div id="startScreen">
+    <h1>Escape From the Goose</h1>
+    <p>按 <b>空格键</b> 开始游戏</p>
+    <p class="sub">
+        ← → 移动 | ↑ 跳跃 | ↓ 快速下落
+    </p>
+</div>
+
+<canvas id="game" width="900" height="600"></canvas>
+
+<!-- 失败画面 -->
+<div id="gameOverScreen" style="display:none;">
+    <div id="gameOverBox">
+        <h1>游戏结束</h1>
+        <p id="currentTimeText"></p>
+        <p id="bestTimeText"></p>
+        <button id="retryBtn">🔄 重试</button>
+    </div>
+</div>
+
+<script>
+let gameState = "start"; // start | playing | dead
+
+let bestTime = Number(localStorage.getItem("gooseBestTime")) || 0;
+
+let timerStarted = false;
+
+/* =========================
+   基础变量与初始化
+========================= */
+let onPlatform = false;
+
+let jumpCount = 0;
+const maxJumps = 2; // 二段跳
+
+const physics = {
+    acceleration: 0.3,
+    friction: 0.92,
+    maxSpeed: 2,
+    gravity: 0.2,
+    jumpForce: -7.5
+};
+
+const ground = {
+    y: 600,        // 地面高度（平台下方）
+    h: 30
+};
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const W = canvas.width;
+const H = canvas.height;
+
+const camera = {
+    x: 0,
+    y: 0,
+    width: W,
+    height: H
+};
+
+let gameRunning = false;
+let startTime = 0;
+let survivalTime = 0;
+
+/* =========================
+   玩家属性
+========================= */
+const player = {
+    x: 80,
+    y: 300,
+    w: 30,
+    h: 40,
+    vx: 0,
+    vy: 0,
+};
+
+/* =========================
+   Goose（鹅）属性
+========================= */
+const gooseImg = new Image();
+gooseImg.src = "goose.webp";
+
+const goose = {
+    x: -300,
+    y: 320,
+    w: 40,
+    h: 50,
+    speed: 2.5,   // ✅ 固定速度
+    active: false
+};
+
+/* =========================
+   平台数据
+========================= */
+let platforms = [];
+
+function generateMorePlatforms(count = 10) {
+
+    let lastPlatform = platforms[platforms.length - 1];
+
+    let lastX = lastPlatform.x + lastPlatform.w;
+
+    for (let i = 0; i < count; i++) {
+
+        const gap = 90 + Math.random() * 90;
+        const width = 80 + Math.random() * 100;
+
+        const layer = Math.floor(Math.random() * 3) + 1;
+        const y = 120 + layer * 80 + Math.random() * 40;
+
+        platforms.push({
+            x: lastX + gap,
+            y,
+            w: width,
+            h: 20
+        });
+
+        lastX += gap + width;
+    }
+}
+
+function createPlatforms() {
+    platforms = [];
+
+    // 起始平台（保证安全）
+    platforms.push({
+        x: 0,
+        y: 340,
+        w: 200,
+        h: 20
+    });
+
+    generateMorePlatforms(15);
+}
+
+/* =========================
+   输入控制
+========================= */
+const keys = {};
+
+document.addEventListener("keydown", e => {
+    keys[e.code] = true;
+
+    if (e.code === "ArrowUp") {
+        if (jumpCount < maxJumps) {
+            player.vy = physics.jumpForce;
+            jumpCount++;
+        }
+    }
+
+    if (e.code === "Space" && gameState === "start") {
+        startGame();
+    }
+});
+
+document.addEventListener("keyup", e => {
+    keys[e.code] = false;
+});
+
+/* =========================
+   游戏开始
+========================= */
+function startGame() {
+    gameState = "playing";
+    gameRunning = true;
+
+    camera.x = 0;
+    camera.y = 0;
+
+    // 生成平台
+    createPlatforms();
+
+    // 隐藏起始页面
+    document.getElementById("startScreen").style.display = "none";
+    document.getElementById("gameOverScreen").style.display = "none";
+
+    // 重置玩家
+    player.x = 80;
+    player.y = 300;
+    player.vx = 0;
+    player.vy = 0;
+
+    // 重置 Goose
+    goose.x = -300;
+    goose.speed = 2.2;
+    goose.active = false;
+
+    timerStarted = false;
+    startTime = 0;
+    survivalTime = 0;
+    requestAnimationFrame(gameLoop);
+}
+
+document.getElementById("retryBtn").addEventListener("click", () => {
+    document.getElementById("gameOverScreen").style.display = "none";
+    startGame();
+});
+
+/* =========================
+   物理与碰撞检测
+========================= */
+function activateGoose() {
+    goose.active = true;
+    goose.x = player.x - 400;
+    goose.y = player.y + 100;
+}
+
+function updatePlayer() {
+    // 加速度移动
+    if (keys["ArrowLeft"]) player.vx -= physics.acceleration;
+    if (keys["ArrowRight"]) player.vx += physics.acceleration;
+    player.vx *= physics.friction;
+
+    if (player.vx > physics.maxSpeed) player.vx = physics.maxSpeed;
+    if (player.vx < -physics.maxSpeed) player.vx = -physics.maxSpeed;
+
+    // 快速下落
+    if (keys["ArrowDown"]) {
+        player.vy += 1.5;
+    }
+
+    // 重力
+    player.vy += physics.gravity;
+
+    const previousBottom = player.y + player.h - player.vy;
+
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // 平台碰撞
+    onPlatform = false;
+    platforms.forEach(p => {
+        if (
+            previousBottom <= p.y &&
+            player.y + player.h >= p.y &&
+            player.x < p.x + p.w &&
+            player.x + player.w > p.x
+        ) {
+            player.y = p.y - player.h;
+            player.vy = 0;
+            jumpCount = 0;
+        }
+    });
+
+    // 地面死亡
+    if (player.y + player.h >= ground.y) {
+        endGame();
+    }
+
+    // 左边界
+    if (player.x < 0) {
+        player.x = 0;
+        player.vx = 0;
+    }
+
+    // 生成更多平台
+    const lastPlatform = platforms[platforms.length - 1];
+
+    if (player.x > lastPlatform.x - 1000) {
+        generateMorePlatforms(10);
+    }
+
+    platforms = platforms.filter(
+        p => p.x > camera.x - 2000
+    );
+    
+    // Start timer and activate Goose when player moves
+    if (
+        !timerStarted &&
+        (
+            keys["ArrowLeft"] ||
+            keys["ArrowRight"] ||
+            keys["ArrowUp"] ||
+            keys["ArrowDown"]
+        )
+    ) {
+        timerStarted = true;
+        startTime = performance.now();
+
+        if (!goose.active) {
+            activateGoose();
+        }
+    }
+}
+
+/* =========================
+   Goose 行为
+========================= */
+function updateGoose() {
+    if (!goose.active) return;
+
+    // 玩家中心
+    const playerCX = player.x + player.w / 2;
+    const playerCY = player.y + player.h / 2;
+
+    // Goose 中心
+    const gooseCX = goose.x + goose.w / 2;
+    const gooseCY = goose.y + goose.h / 2;
+
+    // 方向向量
+    let dx = playerCX - gooseCX;
+    let dy = playerCY - gooseCY;
+
+    // 归一化
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist === 0) return;
+
+    dx /= dist;
+    dy /= dist;
+
+    // 匀速移动
+    goose.x += dx * goose.speed;
+    goose.y += dy * goose.speed;
+}
+
+/* =========================
+   失败判定
+========================= */
+function checkFail() {
+    // 被 Goose 追上
+    if (
+        player.x < goose.x + goose.w &&
+        player.x + player.w > goose.x &&
+        player.y < goose.y + goose.h &&
+        player.y + player.h > goose.y
+    ) {
+        endGame();
+    }
+}
+
+/* =========================
+   游戏结束
+========================= */
+function endGame() {
+    gameRunning = false;
+    gameState = "dead";
+
+    if (timerStarted) {
+        survivalTime =
+            ((performance.now() - startTime) / 1000).toFixed(2);
+    } else {
+        survivalTime = "0.00";
+    }
+
+    // 更新最高纪录
+    const best = Math.max(survivalTime, bestTime).toFixed(2);
+    if (survivalTime > bestTime) {
+        bestTime = survivalTime;
+    }
+
+    // 显示失败画面
+    document.getElementById("currentTimeText").innerText =
+        "本次存活时间：" + survivalTime + " 秒";
+    document.getElementById("bestTimeText").innerText =
+        "最高存活时间：" + best + " 秒";
+
+    document.getElementById("gameOverScreen").style.display = "flex";
+
+    // 显示起始页面
+    document.getElementById("gameOverScreen").style.display = "flex";
+}
+
+/* =========================
+   绘制函数
+========================= */
+function drawStartScene() {
+    ctx.clearRect(0, 0, W, H);
+
+    camera.x = 0;
+    camera.y = 0;
+
+    drawPlatforms();
+    drawGround();
+}
+
+function drawGround() {
+    ctx.fillRect(
+        -10000,
+        ground.y - camera.y,
+        1000000,
+        ground.h
+    );
+}
+
+function drawPlatforms() {
+    ctx.fillStyle = "#654321";
+    platforms.forEach(p => {
+        ctx.fillRect(
+            p.x - camera.x,
+            p.y - camera.y,
+            p.w,
+            p.h
+        );
+    });
+}
+
+function drawPlayer() {
+    ctx.fillStyle = "#007acc";
+    ctx.fillRect(
+        player.x - camera.x,
+        player.y - camera.y,
+        player.w,
+        player.h
+    );
+}
+
+function drawGoose() {
+
+    if (gooseImg.complete) {
+
+        ctx.drawImage(
+            gooseImg,
+            goose.x - camera.x,
+            goose.y - camera.y,
+            goose.w,
+            goose.h
+        );
+
+    } else {
+
+        ctx.fillStyle = "#ff6600";
+
+        ctx.fillRect(
+            goose.x - camera.x,
+            goose.y - camera.y,
+            goose.w,
+            goose.h
+        );
+    }
+}
+
+function drawUI() {
+    ctx.fillStyle = "#000";
+    ctx.font = "18px Arial";
+    ctx.textAlign = "left";
+
+    let t = 0;
+
+    if (gameRunning) {
+        if (timerStarted) {
+            t = ((performance.now() - startTime) / 1000).toFixed(2);
+        } else {
+            t = "0.00";
+        }
+    } else {
+        t = survivalTime;
+    }
+
+    ctx.fillText("存活时间：" + t + " 秒", 10, 30);
+}
+
+function updateCamera() {
+    camera.x = player.x - W / 2 + player.w / 2;
+    camera.y = player.y - H / 2 + player.h / 2;
+
+    if (camera.x < 0) camera.x = 0;
+    if (camera.y < 0) camera.y = 0;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    updateCamera();
+
+    drawPlatforms();
+    drawPlayer();
+    drawGoose();
+    drawGround();
+
+    // UI 不随摄像机移动
+    drawUI();
+}
+
+/* =========================
+   主循环
+========================= */
+function gameLoop() {
+    if (!gameRunning) return;
+
+    updatePlayer();
+    updateGoose();
+    checkFail();
+    draw();
+
+    requestAnimationFrame(gameLoop);
+}
+
+// 初始绘制
+draw();
+createPlatforms();
+drawStartScene();
+</script>
+
+</body>
+</html>
